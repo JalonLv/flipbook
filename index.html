@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Flipbook</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: #333; 
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            position: relative;
+        }
+        canvas { 
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        .controls {
+            position: absolute;
+            top: 50%;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            transform: translateY(-50%);
+            z-index: 2;
+        }
+        button {
+            background: rgba(255, 255, 255, 0.7);
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-size: 18px;
+        }
+        #pdfUpload {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 3;
+            font-size: 16px;
+            padding: 5px;
+            background: rgba(255, 255, 255, 0.7);
+            border: none;
+            cursor: pointer;
+        }
+        #resetButton {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 3;
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.7);
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        #resetButton svg {
+            width: 20px;
+            height: 20px;
+        }
+        /* Watermark Style */
+        #watermark {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) rotate(-45deg);
+            font-size: 40px;
+            color: rgba(255, 255, 255, 0.1);
+            pointer-events: none;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+    <input type="file" id="pdfUpload" accept="application/pdf">
+    <button id="resetButton">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 6V2L8 6l4 4V8a4 4 0 1 1 0 8h1"></path></svg>
+        Reset
+    </button>
+    <div class="controls">
+        <button id="prevPage">❮ Prev</button>
+        <button id="nextPage">Next ❯</button>
+    </div>
+
+    <!-- Watermark -->
+    <div id="watermark">Made by Jalon Livan</div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.min.js"></script>
+    <script>
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const light = new THREE.DirectionalLight(0xffffff, 1);
+        light.position.set(5, 5, 5).normalize();
+        scene.add(light);
+
+        const book = new THREE.Group();
+        scene.add(book);
+        camera.position.z = 10;
+
+        let pages = [];
+        let currentPage = 0;
+
+        document.getElementById('pdfUpload').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function() {
+                    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(reader.result) });
+                    loadingTask.promise.then(pdf => {
+                        let pagePromises = [];
+                        for (let i = 1; i <= pdf.numPages; i++) {
+                            pagePromises.push(pdf.getPage(i));
+                        }
+                        
+                        Promise.all(pagePromises).then(pagesData => {
+                            pagesData.forEach((page, index) => {
+                                const viewport = page.getViewport({ scale: 3 });
+                                const canvas = document.createElement('canvas');
+                                const context = canvas.getContext('2d');
+                                canvas.width = viewport.width;
+                                canvas.height = viewport.height;
+                                
+                                page.render({ canvasContext: context, viewport }).promise.then(() => {
+                                    const texture = new THREE.Texture(canvas);
+                                    texture.needsUpdate = true;
+                                    const geometry = new THREE.PlaneGeometry(8, (viewport.height / viewport.width) * 8);
+                                    const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide });
+                                    const pageMesh = new THREE.Mesh(geometry, material);
+                                    pageMesh.visible = index === 0;
+                                    book.add(pageMesh);
+                                    pages[index] = pageMesh;
+                                });
+                            });
+                        });
+                    });
+                };
+                reader.readAsArrayBuffer(file);
+            }
+        });
+
+        function showPage(index) {
+            if (index >= 0 && index < pages.length) {
+                const prevPage = pages[currentPage];
+                const nextPage = pages[index];
+                
+                if (prevPage) {
+                    if (index > currentPage) { // Moving to the next page
+                        new TWEEN.Tween(prevPage.rotation)
+                            .to({ y: -Math.PI / 2 }, 500) // Flip to the left
+                            .onComplete(() => {
+                                prevPage.visible = false;
+                                nextPage.visible = true;
+                                new TWEEN.Tween(nextPage.rotation)
+                                    .to({ y: 0 }, 500) // Bring the next page in from the right
+                                    .start();
+                            })
+                            .start();
+                    } else if (index < currentPage) { // Moving to the previous page
+                        new TWEEN.Tween(prevPage.rotation)
+                            .to({ y: Math.PI / 2 }, 500) // Flip to the right
+                            .onComplete(() => {
+                                prevPage.visible = false;
+                                nextPage.visible = true;
+                                new TWEEN.Tween(nextPage.rotation)
+                                    .to({ y: 0 }, 500) // Bring the previous page in from the left
+                                    .start();
+                            })
+                            .start();
+                    }
+                }
+                currentPage = index;
+            }
+        }
+
+        document.getElementById('prevPage').addEventListener('click', function() {
+            if (currentPage > 0) {
+                showPage(currentPage - 1);
+            }
+        });
+
+        document.getElementById('nextPage').addEventListener('click', function() {
+            if (currentPage < pages.length - 1) {
+                showPage(currentPage + 1);
+            }
+        });
+
+        // Arrow key navigation
+        window.addEventListener('keydown', function(event) {
+            if (event.key === "ArrowLeft") {
+                // Left arrow key: previous page
+                if (currentPage > 0) {
+                    showPage(currentPage - 1);
+                }
+            } else if (event.key === "ArrowRight") {
+                // Right arrow key: next page
+                if (currentPage < pages.length - 1) {
+                    showPage(currentPage + 1);
+                }
+            }
+        });
+
+        // Zoom functionality with mouse wheel
+        let zoomLevel = 10;  // Initial zoom level
+        const zoomFactor = 0.015;  // Zoom speed: 1.5% per scroll
+
+        const minZoom = 2;  // Minimum zoom level
+        const maxZoom = 20;  // Maximum zoom level
+        let lastZoomTime = 0;
+
+        // Get the mouse position
+        let mouseX = 0, mouseY = 0;
+        window.addEventListener('mousemove', (event) => {
+            mouseX = (event.clientX / window.innerWidth) * 2 - 1;
+            mouseY = -(event.clientY / window.innerHeight) * 2 + 1;
+        });
+
+        // Throttled zoom functionality
+        window.addEventListener('wheel', (event) => {
+            event.preventDefault();
+            const now = Date.now();
+            if (now - lastZoomTime < 100) return; // Throttle zoom events (100ms delay)
+
+            lastZoomTime = now;
+
+            // Reverse the scroll direction: scroll down zooms in, scroll up zooms out
+            if (event.deltaY > 0) {
+                zoomLevel *= (1 - zoomFactor);  // Zoom in (scroll down)
+            } else {
+                zoomLevel *= (1 + zoomFactor);  // Zoom out (scroll up)
+            }
+
+            // Ensure zoom level is within the min and max bounds
+            zoomLevel = Math.min(maxZoom, Math.max(minZoom, zoomLevel));
+
+            // Get the center of the canvas for zooming effect
+            const centerX = (mouseX + 1) * window.innerWidth / 2;
+            const centerY = (mouseY + 1) * window.innerHeight / 2;
+
+            // Apply the scaling to the book
+            const scale = zoomLevel / 10;
+            book.scale.set(scale, scale, scale);
+
+            // Adjust camera position based on zoom level
+            camera.position.z = 10 / scale;
+        });
+
+        // Reset button functionality
+        document.getElementById('resetButton').addEventListener('click', function() {
+            // Reset zoom level to 10 (default)
+            zoomLevel = 10;
+            book.scale.set(1, 1, 1);
+            camera.position.z = 10;
+
+            // Reset panning position
+            offsetX = 0;
+            offsetY = 0;
+            book.position.set(offsetX, offsetY, 0);
+        });
+
+        // Drag-to-pan functionality (only works after zoom level 2)
+        let isDragging = false;
+        let startX = 0, startY = 0, offsetX = 0, offsetY = 0;
+
+        window.addEventListener('mousedown', (event) => {
+            // Only enable dragging when zoomLevel is >= 2
+            if (zoomLevel >= 2) {
+                isDragging = true;
+                startX = event.clientX - offsetX;
+                startY = event.clientY - offsetY;
+            }
+        });
+
+        window.addEventListener('mousemove', (event) => {
+            if (isDragging && zoomLevel >= 2) {  // Check zoom level before dragging
+                // Invert the panning direction by reversing the calculations
+                offsetX -= (event.clientX - startX) * 0.007;  // Inverted: move left when dragging right
+                offsetY -= (event.clientY - startY) * 0.007;  // Inverted: move up when dragging down
+                startX = event.clientX;
+                startY = event.clientY;
+                book.position.set(offsetX, offsetY, 0); // Move the book based on inverted direction
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            TWEEN.update();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+        });
+    </script>
+</body>
+</html>
